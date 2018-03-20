@@ -119,7 +119,7 @@ void SysTick_Handler(void){
 void EINT3_IRQHandler(void){
 	if((LPC_GPIOINT->IO2IntStatR>>10) & 0x1){
 		//print statements in interrupts cause a lot of overhead, use flags instead to print statements
-		printf("Button right pressed.\n");
+		//printf("Button right pressed.\n");
 		mode = 0x01;
 		//clears the interrupt (have to do this or the interrupt will loop infinitely
 		LPC_GPIOINT->IO2IntClr = 1<<10;
@@ -159,8 +159,8 @@ int main (void) {
 	NVIC_EnableIRQ(EINT3_IRQn);
 
 	mode = 0; //init as STATIONARY MODE
-	char* stationaryStrPtr;
-	char* stationaryTempPtr[50]={};
+	char* modeStrPtr;
+	char* tempStrPtr[50]={};
 	uint32_t temp_value;
 	uint32_t stationary_counter = 15;
 	uint8_t sseg_chars[] = {
@@ -171,10 +171,10 @@ int main (void) {
 	};
 
 	//stationaryTempPtr = "Temp:";
-	stationaryStrPtr = "STATIONARY";
+	modeStrPtr = "STATIONARY";
 	oled_clearScreen(OLED_COLOR_BLACK);
-	oled_putString(20, 20, (unsigned char*)stationaryStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	oled_putString(20, 28, (unsigned char*)stationaryTempPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	oled_putString(20, 20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	led7seg_setChar(sseg_chars[stationary_counter], TRUE);
 
     while (1)
@@ -183,17 +183,20 @@ int main (void) {
     	if(mode == 0x00){
     		temp_value = temp_read();
     		sprintf(stationaryTempPtr, "Temp: %2.2f", temp_value/10.0);
-    		oled_putString(20, 28, (unsigned char*)stationaryTempPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    		oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     		printf("checking temp \n");
     	}
     	/* <---STATIONARY TO LAUNCH---> */
     	else if(mode == 0x01){
     		if(stationary_counter == 0){
-    			mode = 0x02;
+    			mode = 0x02; //enter LAUNCH mode
+    			modeStrPtr = "LAUNCH";
+    			oled_clearScreen(OLED_COLOR_BLACK);
+    			oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     		} else {
     			temp_value = temp_read();
     			sprintf(stationaryTempPtr, "Temp: %2.2f", temp_value/10.0);
-    			oled_putString(20, 28, (unsigned char*)stationaryTempPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    			oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     			printf("checking temp \n");
 
     			stationary_counter = stationary_counter - 1;
@@ -201,6 +204,13 @@ int main (void) {
 
     	    	delayMS(1000);
     		}
+    	}
+    	/* <---LAUNCH MODE---> */
+    	else if(mode == 0x02){
+    		temp_value = temp_read();
+    		sprintf(stationaryTempPtr, "Temp: %2.2f", temp_value/10.0);
+    		oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    		printf("checking temp \n");
     	}
     }
 }
