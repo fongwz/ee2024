@@ -14,6 +14,8 @@
 
 volatile uint32_t msTicks;
 volatile uint8_t mode;
+volatile char* modeStrPtr;
+volatile uint8_t toggle_counter;
 
 #define PRESCALE (25000-1)
 
@@ -118,12 +120,27 @@ void SysTick_Handler(void){
 
 void EINT3_IRQHandler(void){
 	if((LPC_GPIOINT->IO2IntStatR>>10) & 0x1){
-		//print statements in interrupts cause a lot of overhead, use flags instead to print statements
-		//printf("Button right pressed.\n");
-		mode = 0x01;
-		//clears the interrupt (have to do this or the interrupt will loop infinitely
-		LPC_GPIOINT->IO2IntClr = 1<<10;
+		if(toggle_counter==0 && mode == 0x00){
+			//print statements in interrupts cause a lot of overhead, use flags instead to print statements
+			//printf("Button right pressed.\n");
+			mode = 0x01;
+			toggle_counter++;
+			//clears the interrupt (have to do this or the interrupt will loop infinitely
+			LPC_GPIOINT->IO2IntClr = 1<<10;
+		}else if(toggle_counter==0 && mode == 0x02){
+			mode = 0x00;
+			toggle_counter++;
+			oled_clearScreen(OLED_COLOR_BLACK);
+			modeStrPtr = "STATIONARY";
+			oled_putString(20, 20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+			LPC_GPIOINT->IO2IntClr = 1<<10;
+		}
 	}
+		/*
+	} else if((LPC_GPIOINT->IO0IntStatF>>6) & 0x1){
+		printf("hello\n");
+		LPC_GPIOINT->IO0IntClr = 1<<6;
+	}*/
 }
 
 void delayMS(unsigned int milliseconds) //Using Timer0
@@ -156,10 +173,11 @@ int main (void) {
 	temp_init(getTicks);
 
 	LPC_GPIOINT->IO2IntEnR |= 1<<10;
+	//LPC_GPIOINT->IO0IntEnF |= 1<<6;
 	NVIC_EnableIRQ(EINT3_IRQn);
 
 	mode = 0; //init as STATIONARY MODE
-	char* modeStrPtr;
+	//char* modeStrPtr;
 	char* tempStrPtr[50]={};
 	uint32_t temp_value;
 	uint32_t stationary_counter = 15;
@@ -182,9 +200,9 @@ int main (void) {
     	/* <---STATIONARY MODE---> */
     	if(mode == 0x00){
     		temp_value = temp_read();
-    		sprintf(stationaryTempPtr, "Temp: %2.2f", temp_value/10.0);
+    		sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
     		oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-    		printf("checking temp \n");
+    		//printf("checking temp \n");
     	}
     	/* <---STATIONARY TO LAUNCH---> */
     	else if(mode == 0x01){
@@ -194,23 +212,27 @@ int main (void) {
     			oled_clearScreen(OLED_COLOR_BLACK);
     			oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     		} else {
-    			temp_value = temp_read();
-    			sprintf(stationaryTempPtr, "Temp: %2.2f", temp_value/10.0);
-    			oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-    			printf("checking temp \n");
-
     			stationary_counter = stationary_counter - 1;
     			led7seg_setChar(sseg_chars[stationary_counter], TRUE);
 
-    	    	delayMS(1000);
+    			temp_value = temp_read();
+    			sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
+    			oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    			//printf("checking temp \n");
+
+    	    	delayMS(667);
     		}
     	}
     	/* <---LAUNCH MODE---> */
     	else if(mode == 0x02){
     		temp_value = temp_read();
-    		sprintf(stationaryTempPtr, "Temp: %2.2f", temp_value/10.0);
+    		sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
     		oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-    		printf("checking temp \n");
+    		//printf("checking temp \n");
     	}
+
+    	/* <---reset toggle_counter---> */
+    	toggle_counter = 0;
+    	delayMS(333);
     }
 }
