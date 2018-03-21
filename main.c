@@ -16,8 +16,30 @@ volatile uint32_t msTicks;
 volatile uint8_t mode;
 volatile char* modeStrPtr;
 volatile uint8_t toggle_counter;
+volatile uint32_t temp_value;
+volatile char* tempStrPtr[50]={};
+
+
+
+volatile uint32_t count;
 
 #define PRESCALE (25000-1)
+#define TEMP_HIGH_THRESHOLD 29.0
+
+void delayMS(unsigned int milliseconds) //Using Timer0
+{
+	LPC_TIM0->TCR = 0x02; //Reset Timer
+
+	LPC_TIM0->TCR = 0x01; //Enable timer
+
+	while(LPC_TIM0->TC < milliseconds); //wait until timer counter reaches the desired delay
+
+	LPC_TIM0->TCR = 0x00; //Disable timer
+}
+
+uint32_t getTicks(void){
+	return msTicks;
+}
 
 void init_Timer0(void)
 {
@@ -52,10 +74,6 @@ static void init_GPIO(void)
 	PinCfg.Pinnum = 31;
 	PINSEL_ConfigPin(&PinCfg);
 	GPIO_SetDir(1, 1<<31, 0);
-
-	PinCfg.Portnum = 0;
-	PinCfg.Pinnum = 6;
-	PINSEL_ConfigPin(&PinCfg);
 }
 
 static void init_ssp(void)
@@ -124,38 +142,24 @@ void EINT3_IRQHandler(void){
 			//print statements in interrupts cause a lot of overhead, use flags instead to print statements
 			//printf("Button right pressed.\n");
 			mode = 0x01;
-			toggle_counter++;
+			toggle_counter = 1;
 			//clears the interrupt (have to do this or the interrupt will loop infinitely
 			LPC_GPIOINT->IO2IntClr = 1<<10;
-		}else if(toggle_counter==0 && mode == 0x02){
-			mode = 0x00;
+		}else if(mode == 0x02 && toggle_counter==0){
 			toggle_counter++;
-			oled_clearScreen(OLED_COLOR_BLACK);
-			modeStrPtr = "STATIONARY";
-			oled_putString(20, 20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-			LPC_GPIOINT->IO2IntClr = 1<<10;
+			delayMS(1000);
+			if(toggle_counter==2){
+				mode = 0x03;
+				oled_clearScreen(OLED_COLOR_BLACK);
+			} else {
+				mode = 0x00;
+				oled_clearScreen(OLED_COLOR_BLACK);
+			}
+		} else if(mode==0x02 && toggle_counter==1){
+			toggle_counter++;
 		}
+
 	}
-		/*
-	} else if((LPC_GPIOINT->IO0IntStatF>>6) & 0x1){
-		printf("hello\n");
-		LPC_GPIOINT->IO0IntClr = 1<<6;
-	}*/
-}
-
-void delayMS(unsigned int milliseconds) //Using Timer0
-{
-	LPC_TIM0->TCR = 0x02; //Reset Timer
-
-	LPC_TIM0->TCR = 0x01; //Enable timer
-
-	while(LPC_TIM0->TC < milliseconds); //wait until timer counter reaches the desired delay
-
-	LPC_TIM0->TCR = 0x00; //Disable timer
-}
-
-uint32_t getTicks(void){
-	return msTicks;
 }
 
 int main (void) {
@@ -173,13 +177,11 @@ int main (void) {
 	temp_init(getTicks);
 
 	LPC_GPIOINT->IO2IntEnR |= 1<<10;
-	//LPC_GPIOINT->IO0IntEnF |= 1<<6;
+	//LPC_GPIOINT->IO0IntEnR |= 1<<2;
 	NVIC_EnableIRQ(EINT3_IRQn);
 
+	uint8_t sw4btn = 1;
 	mode = 0; //init as STATIONARY MODE
-	//char* modeStrPtr;
-	char* tempStrPtr[50]={};
-	uint32_t temp_value;
 	uint32_t stationary_counter = 15;
 	uint8_t sseg_chars[] = {
 	        /* digits 0 - 9 */
@@ -189,10 +191,8 @@ int main (void) {
 	};
 
 	//stationaryTempPtr = "Temp:";
-	modeStrPtr = "STATIONARY";
+
 	oled_clearScreen(OLED_COLOR_BLACK);
-	oled_putString(20, 20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
-	oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	led7seg_setChar(sseg_chars[stationary_counter], TRUE);
 
     while (1)
@@ -201,16 +201,21 @@ int main (void) {
     	if(mode == 0x00){
     		temp_value = temp_read();
     		sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
-    		oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    		modeStrPtr = "STATIONARY";
+    		oled_putString(20, 20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    		if(temp_value/10.0 > TEMP_HIGH_THRESHOLD){
+    			oled_clearScreen(OLED_COLOR_BLACK);
+    			mode=0x05;
+    		}else{
+    			oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    		}
     		//printf("checking temp \n");
     	}
     	/* <---STATIONARY TO LAUNCH---> */
     	else if(mode == 0x01){
     		if(stationary_counter == 0){
     			mode = 0x02; //enter LAUNCH mode
-    			modeStrPtr = "LAUNCH";
     			oled_clearScreen(OLED_COLOR_BLACK);
-    			oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     		} else {
     			stationary_counter = stationary_counter - 1;
     			led7seg_setChar(sseg_chars[stationary_counter], TRUE);
@@ -220,19 +225,51 @@ int main (void) {
     			oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     			//printf("checking temp \n");
 
-    	    	delayMS(667);
+    			if(temp_value/10.0 > TEMP_HIGH_THRESHOLD){
+    			    oled_clearScreen(OLED_COLOR_BLACK);
+    	    		mode=0x05;
+    	    		stationary_counter = 15;
+    	    		led7seg_setChar(sseg_chars[stationary_counter], TRUE);
+    			}
+
+    	    	delayMS(1000);
     		}
     	}
     	/* <---LAUNCH MODE---> */
     	else if(mode == 0x02){
+			modeStrPtr = "LAUNCH";
+			oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     		temp_value = temp_read();
     		sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
     		oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
     		//printf("checking temp \n");
+
     	}
 
+    	else if(mode == 0x03){
+    		modeStrPtr = "RETURN";
+    		oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+    	}
+
+    	else if(mode==0x05){
+    		modeStrPtr = "Temp. too high";
+    		oled_putString(10,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE,OLED_COLOR_BLACK);
+    		sw4btn = (GPIO_ReadValue(1) >> 31) & 0x01;
+    		if(sw4btn == 0){
+    			if(sseg_chars[stationary_counter] == 0x24){
+    				mode = 0x02;
+    			} else {
+    				stationary_counter = 15;
+    				mode = 0x00;
+    				oled_clearScreen(OLED_COLOR_BLACK);
+    			}
+    		}
+    	}
+
+
     	/* <---reset toggle_counter---> */
+    	//printf("sseg value = %X\n", sseg_chars[stationary_counter]);
+    	printf("mode value = %X\n", mode);
     	toggle_counter = 0;
-    	delayMS(333);
     }
 }
