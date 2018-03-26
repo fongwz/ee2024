@@ -282,6 +282,8 @@ void init_Timer2(void){				//Initialization for timer2
 	LPC_TIM2->IR  = 0xff;			//Resets Timer2 Interrupts
 	LPC_TIM2->MCR |= 1<<10;			//Clears TC when TC hits MR3 value of 100000000
 	LPC_TIM2->TCR = 0x01;			//Start timer2
+
+	//implement a timer interrupt for MR3 to reset number of button presses for transition from launch->return
 }
 
 void SysTick_Handler(void){
@@ -461,8 +463,11 @@ int main (void) {
 	sw4btn = 1; //init sw4 button
 	mode = 0; //init as STATIONARY MODE
 
+	//set initial OLED and SSEG displays
 	oled_clearScreen(OLED_COLOR_BLACK);
 	led7seg_setChar(sseg_chars[stationary_counter], TRUE);
+
+	//get initial offset for accelerometer
 	acc_read(&x, &y, &z);
 	xoff = (0-x)/1.0;
 	yoff = (0-y)/1.0;
