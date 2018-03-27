@@ -19,6 +19,7 @@ volatile uint32_t msTicks;
 //MODE variables
 uint8_t mode;
 uint8_t mode_change_flag = 0;
+uint8_t countdown_flag = 0;
 char* modeStrPtr;
 char* stateStrPtr;
 int8_t toggle_count;
@@ -79,6 +80,7 @@ void TOGGLE_MODE(){
 	// if in STATIONARY mode, go to COUNTDOWN mode
 	if(mode == 0x00){
 		mode = 0x01;
+		countdown_flag = 1;
 		toggle_count = 0;
 		//COUNTDOWN has same oled display as STATIONARY, no need to enable mode_change_flag
 	}
@@ -392,6 +394,9 @@ void TIMER1_IRQHandler(void){
 //1 second Timer Interrupt
 void TIMER3_IRQHandler(void){
 	toggle_count = 0;
+	if(mode == 0x01){
+		countdown_flag = 1;
+	}
 	LPC_TIM3->IR |= 1<<0;
 }
 
@@ -399,7 +404,10 @@ void EINT0_IRQHandler(void){
 	//SW3 interrupt handler
 	toggle_count++;
 	TOGGLE_MODE();
-	LPC_TIM3->TCR = 0x01;
+
+	if(mode != 0x01){
+		LPC_TIM3->TCR = 0x01;
+	}
 	LPC_SC->EXTINT |= 1<<0;
 }
 
@@ -427,12 +435,18 @@ void COUNTDOWN(){
 		//reset timer 3 for launch mode
 		//LPC_TIM3->TCR = 0x02;
 		//LPC_TIM3->TCR = 0x01;
-	} else {
+	} else if(countdown_flag == 1){
 		stationary_counter = stationary_counter - 1;
 		led7seg_setChar(sseg_chars[stationary_counter], TRUE);
 
 		sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
-    	delayMS(1000);
+		oled_putString(20,28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE,OLED_COLOR_BLACK);
+		countdown_flag = 0;
+		//count 1sec
+    	LPC_TIM3->TCR = 0x01;
+	} else {
+		sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
+		oled_putString(20,28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE,OLED_COLOR_BLACK);
 	}
 }
 
