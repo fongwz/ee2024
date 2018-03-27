@@ -63,15 +63,6 @@ volatile uint32_t period;
 #define OBSTACLE_NEAR_THRESHOLD 3000
 #define ACC_THRESHOLD 0.4
 
-void delayMS(unsigned int milliseconds) //Using Timer0
-{
-	LPC_TIM0->TCR = 0x02; //Reset Timer
-
-	LPC_TIM0->TCR = 0x01; //Enable timer
-	while(LPC_TIM0->TC < milliseconds); //wait until timer counter reaches the desired delay
-	LPC_TIM0->TCR = 0x00; //Disable timer
-}
-
 uint32_t getTicks(void){
 	return msTicks;
 }
@@ -278,19 +269,6 @@ static void init_i2c(void)
 
 	/* Enable I2C1 operation */
 	I2C_Cmd(LPC_I2C2, ENABLE);
-}
-
-void init_Timer0(void)
-{
-	/*Assuming that PLL0 has been setup with CCLK = 100Mhz and PCLK = 25Mhz.*/
-	LPC_SC->PCONP |= (1<<1); //Power up TIM0. By default TIM0 and TIM1 are enabled.
-	LPC_SC->PCLKSEL0 &= ~(0x3<<3); //Set PCLK for timer = CCLK/4 = 100/4 (default)
-
-	LPC_TIM0->CTCR = 0x0;
-	LPC_TIM0->PR = PRESCALE; //Increment TC at every 24999+1 clock cycles
-	//25000 clock cycles @25Mhz = 1 mS
-
-	LPC_TIM0->TCR = 0x02; //Reset Timer
 }
 
 //Timer for 333ms intervals
@@ -556,7 +534,6 @@ int main (void) {
     init_GPIO();
     init_i2c();
     init_ssp();
-	init_Timer0();
 	init_Timer1();
 	init_Timer2();	//init timer 2
 	init_Timer3();
