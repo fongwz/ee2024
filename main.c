@@ -4,6 +4,7 @@
 #include "lpc17xx_ssp.h"
 #include "lpc17xx_i2c.h"
 #include "lpc17xx_spi.h"
+#include "lpc17xx_uart.h"
 #include "LPC17xx.h"
 #include "core_cm3.h"
 
@@ -43,6 +44,7 @@ int8_t temp_warning_flag;
 int8_t temp_warning_message_flag;
 uint32_t temp_value = 0;
 volatile char* tempStrPtr[50]={};
+volatile uint32_t period;
 
 //accelerometer variables
 int8_t acc_warning_flag;
@@ -56,7 +58,8 @@ char* accx[40];
 char* accy[40];
 char* accz[40];
 
-volatile uint32_t period;
+//uart variables
+static char* msg = NULL;
 
 #define PRESCALE (25000-1)
 #define TEMP_HIGH_THRESHOLD 31.0
@@ -269,6 +272,28 @@ static void init_i2c(void)
 
 	/* Enable I2C1 operation */
 	I2C_Cmd(LPC_I2C2, ENABLE);
+}
+
+void init_uart(void){
+
+	PINSEL_CFG_Type PinCfg;
+	PinCfg.Funcnum = 2;
+	PinCfg.Pinnum = 0;
+	PinCfg.Portnum = 0;
+	PINSEL_ConfigPin(&PinCfg);
+	PinCfg.Pinnum = 1;
+	PINSEL_ConfigPin(&PinCfg);
+
+	UART_CFG_Type uartCfg;
+	uartCfg.Baud_rate = 115200;
+	uartCfg.Databits = UART_DATABIT_8;
+	uartCfg.Parity = UART_PARITY_NONE;
+	uartCfg.Stopbits = UART_STOPBIT_1;
+
+	//supply power & setup working parameters for uart3
+	UART_Init(LPC_UART3, &uartCfg);
+	//enable transmit for uart3
+	UART_TxCmd(LPC_UART3, ENABLE);
 }
 
 //Timer for 333ms intervals
@@ -534,6 +559,7 @@ int main (void) {
     init_GPIO();
     init_i2c();
     init_ssp();
+    init_uart();
 	init_Timer1();
 	init_Timer2();	//init timer 2
 	init_Timer3();
@@ -588,6 +614,22 @@ int main (void) {
 	acc_warning_message_flag = 0;
 	temp_warning_flag = 0;
 	temp_warning_message_flag = 0;
+
+
+	//uart testing
+	/*
+	//(uncomment this block and comment out SET_MODE and SET_WARNING in the loop to test uart connection)
+	uint8_t data = 0;
+	uint32_t len = 0;
+	uint8_t line[64];
+
+	//test sending message
+	msg = "Welcome to EE2024 \r\n";
+	UART_Send(LPC_UART3, (uint8_t *)msg , strlen(msg), BLOCKING);
+	//test receiving a letter and sending back to port
+	UART_Receive(LPC_UART3, &data, 1, BLOCKING);
+	UART_Send(LPC_UART3, &data, 1, BLOCKING);
+	*/
 
     while (1)
     {
