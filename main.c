@@ -14,6 +14,12 @@
 #include "led7seg.h"
 #include "acc.h"
 #include "pca9532.h"
+#include "light.h"
+
+#define PRESCALE (25000-1)
+#define TEMP_HIGH_THRESHOLD 33.0
+#define ACC_THRESHOLD 0.4
+#define OBSTACLE_NEAR_THRESHOLD 1000
 
 volatile uint32_t msTicks;
 
@@ -44,7 +50,8 @@ int8_t temp_warning_flag;
 int8_t temp_warning_message_flag;
 uint32_t temp_value = 0;
 volatile char* tempStrPtr[50]={};
-volatile uint32_t period;
+volatile uint32_t period = 0;
+volatile int temp_count = 0;
 
 //accelerometer variables
 int8_t acc_warning_flag;
@@ -58,17 +65,20 @@ char* accx[40];
 char* accy[40];
 char* accz[40];
 
+//light sensor variables
+uint16_t ledOn;
+uint32_t brightness;
+uint8_t obst_warning_flag;
+volatile char* lightStrPtr[50]={};
+
 //uart variables
-static char* msg = NULL;
-
-#define PRESCALE (25000-1)
-#define TEMP_HIGH_THRESHOLD 31.0
-#define OBSTACLE_NEAR_THRESHOLD 3000
-#define ACC_THRESHOLD 0.4
-
-uint32_t getTicks(void){
-	return msTicks;
-}
+char* msg = NULL;
+char* modeChangeMsg = NULL;
+char* dataMsg[40] = {};
+char* warningMsg = NULL;
+int8_t uart_data_count = 0;
+int8_t obstacle_data_flag = 0;
+int light_data_flag = 0;
 
 void TOGGLE_MODE(){
 	// if in STATIONARY mode, go to COUNTDOWN mode
@@ -85,6 +95,19 @@ void TOGGLE_MODE(){
 			mode = 0x03;
 			toggle_count = 0;
 
+			//Reset 1sec timer until it enters launch mode again
+			LPC_TIM3->TCR |= 0x02;
+
+			//Reset UART data timer
+			uart_data_count = 0;
+			LPC_TIM0->TCR = 0x02;
+			LPC_TIM0->TCR = 0x01;
+
+			//Send message to UART
+			modeChangeMsg = "Entering RETURN Mode \r\n";
+			UART_Send(LPC_UART3, (uint8_t *)modeChangeMsg , strlen(modeChangeMsg), BLOCKING);
+			temp_count = 0;
+
 			//Clear all warnings
 			temp_warning_flag = 0;
 			acc_warning_flag = 0;
@@ -95,6 +118,9 @@ void TOGGLE_MODE(){
 
 			//Change viewmode
 			mode_change_flag = 1;
+
+			//Turn on light sensor
+			init_light();
 		}
 	}
 
@@ -105,6 +131,24 @@ void TOGGLE_MODE(){
 
 		//Change viewmode
 		mode_change_flag = 1;
+
+		//Send message to UART
+		modeChangeMsg = "Entering STATIONARY Mode \r\n";
+		UART_Send(LPC_UART3, (uint8_t *)modeChangeMsg, strlen(modeChangeMsg), BLOCKING);
+		temp_count = 0;
+
+		//Clear all warnings
+		temp_warning_flag = 0;
+		acc_warning_flag = 0;
+		obst_warning_flag = 0;
+		temp_warning_message_flag = 0;
+		acc_warning_message_flag = 0;
+		//obst_warning_message_flag = 0;
+		GPIO_ClearValue( 0, (1<<26) );
+		GPIO_ClearValue(2,1<<0);
+
+		//Turn off light sensor
+		close_light();
 	}
 
 	else {
@@ -112,6 +156,7 @@ void TOGGLE_MODE(){
 	}
 }
 
+//Function to check if SW4 button has been pressed to clear temp and acc warnings
 void check_clearWarning(){
 	sw4btn = (GPIO_ReadValue(1) >> 31) & 0x01;
 	if(sw4btn == 0){
@@ -137,6 +182,25 @@ void check_clearWarning(){
 	}
 }
 
+//Turns on and initializes light sensor
+void init_light(){
+	light_enable();
+	brightness = 0;
+	light_setRange(LIGHT_RANGE_4000);
+	light_setWidth(LIGHT_WIDTH_12BITS);
+
+	light_setHiThreshold(3000);
+	light_setLoThreshold(500);
+	light_clearIrqStatus();
+	LPC_GPIOINT->IO2IntEnF |= 1<<5;
+}
+
+//Shuts off and disables light sensor and its interrupts
+void close_light(){
+	light_shutdown();
+	LPC_GPIOINT->IO2IntEnF &= ~(1<<5);
+}
+
 void ACCELEROMETER(){
 	//reset x and y values to 0 first
 	x=0;
@@ -150,9 +214,6 @@ void ACCELEROMETER(){
 	//check if accelerometer in g exceed threshold value
 	if(x/64.0 >= 0.4 || y/64.0 >= 0.4){
 		acc_warning_flag = 1;
-		if(acc_warning_flag == 0){
-			oled_clearScreen(OLED_COLOR_BLACK);
-		}
 	} else {
 		//need values in terms of g, according to acc.h, g level is set to default 2g
 		//divide value read by accelerometer by 64, according to datasheet
@@ -170,27 +231,93 @@ void ACCELEROMETER(){
 void TEMP_SENSOR(){
 
 	static uint32_t t1 = 0;
-	static int count = 0;
 
-	if (!count) {
+	//using TS0/TS1 configuration of GND/Vdd(TS0 jumper attached only)
+	//Following datasheet formula:
+	//10temp_value(deg celcius) = 10(period(us)/scalar multiplier of 10) - 2731
+
+	if (!temp_count) {
 		t1 = LPC_TIM2->TC;
 	} else {
 		period = LPC_TIM2->TC;
 		if (period > t1) {
 			period = period - t1;	//obtained period is in 10^-8s
+			temp_value = period/1600 - 2731;
 		} else {
 			period = (100000000 - t1 + 1) + period;
+			temp_value = period/1600 - 2731;
 		}
 	}
-	count = !count;
-	//using TS0/TS1 configuration of GND/GND(both jumpers attached)
-	//Following datasheet formula:
-	//10temp_value(deg celcius) = 10(period(us)/scalar multiplier of 10) - 2731
-	//if(mode_change_flag == 0){
-		temp_value = period/100 - 2731;
-	//}
+	temp_count = !temp_count;
+
 	if(temp_value/10.0 > TEMP_HIGH_THRESHOLD){
 		temp_warning_flag = 1;
+	}
+}
+
+void LED_ARRAY(){
+	//increase number of leds as object gets closer/more light
+	ledOn = 0x0000;
+	brightness = light_read();
+
+	//Set LED mask according to brightness
+	if (brightness > OBSTACLE_NEAR_THRESHOLD) ledOn |= LED19;
+	if (brightness > 2800) ledOn |= LED18;
+	if (brightness > 2600) ledOn |= LED17;
+	if (brightness > 2400) ledOn |= LED16;
+	if (brightness > 2200) ledOn |= LED15;
+	if (brightness > 2000) ledOn |= LED14;
+	if (brightness > 1800) ledOn |= LED13;
+	if (brightness > 1600) ledOn |= LED12;
+	if (brightness > 1400) ledOn |= LED11;
+	if (brightness > 1200) ledOn |= LED10;
+	if (brightness > 1000) ledOn |= LED9;
+	if (brightness > 900) ledOn |= LED8;
+	if (brightness > 800) ledOn |= LED7;
+	if (brightness > 700) ledOn |= LED6;
+	if (brightness > 600) ledOn |= LED5;
+	if (brightness > 500) ledOn |= LED4;
+	//Turn on LEDs
+	pca9532_setLeds(ledOn, 0xffff);
+}
+
+//Data transmission to UART every 10 seconds
+void SEND_DATA(){
+	if(mode == 0x02){
+		sprintf(dataMsg, "Temp : %2.2f; ACC X : %3.1f; Y : %3.1f \r\n", temp_value/10.0, x/64.0, y/64.0);
+		UART_Send(LPC_UART3, (uint8_t *)dataMsg, strlen(dataMsg), BLOCKING);
+	} else if(mode == 0x03){
+		sprintf(dataMsg, "Obstacle distance : %d m \r\n", light_read());
+		UART_Send(LPC_UART3, (uint8_t *)dataMsg, strlen(dataMsg), BLOCKING);
+	}
+}
+
+//Warning messages to UART for temp sensor and accelerometer
+void SEND_WARNING(){
+	if(mode == 0x02){
+		if(temp_warning_flag == 0x01 && temp_warning_message_flag == 0x00){
+			warningMsg = "Temp. too high. \r\n";
+			UART_Send(LPC_UART3, (uint8_t *)warningMsg, strlen(warningMsg), BLOCKING);
+		} else if(acc_warning_flag == 0x01 && acc_warning_message_flag == 0x00){
+			warningMsg = "Veer off course. \r\n";
+			UART_Send(LPC_UART3, (uint8_t *)warningMsg, strlen(warningMsg), BLOCKING);
+		}
+	}
+	temp_count = 0;
+}
+
+//Warning messages to UART for light sensor
+void SEND_OBST_WARNING(){
+	if(obst_warning_flag==0 && light_data_flag==0){
+		warningMsg = "Obstacle near \r\n";
+		UART_Send(LPC_UART3, (uint8_t *)warningMsg, strlen(warningMsg), BLOCKING);
+		light_data_flag = 1;
+		temp_count = 0;
+	} else if(obst_warning_flag==1 && light_data_flag==1){
+		warningMsg = "Obstacle Avoided \r\n";
+		UART_Send(LPC_UART3, (uint8_t *)warningMsg, strlen(warningMsg), BLOCKING);
+		light_data_flag = 0;
+		temp_count = 0;
 	}
 }
 
@@ -296,6 +423,18 @@ void init_uart(void){
 	UART_TxCmd(LPC_UART3, ENABLE);
 }
 
+//Timer for UART data transmissions
+void init_Timer0(void){
+	//LPC_SC->PCONP |= (1<<1);
+	LPC_SC->PCLKSEL0 |= 1<<2;
+	LPC_TIM0->TCR = 0x02;
+	LPC_TIM0->PR = 0x00;
+	LPC_TIM0->MR3 = 100000000;
+	LPC_TIM0->IR = 0xff;
+	LPC_TIM0->MCR |= (1<<10);
+	LPC_TIM0->MCR |= (1<<9);
+}
+
 //Timer for 333ms intervals
 void init_Timer1(void){
 	LPC_SC->PCONP |= (1<<2);		//Turns on timer1 (On by default)
@@ -345,6 +484,16 @@ void SysTick_Handler(void){
 	msTicks++;
 }
 
+//Interrupt handler for UART data transmission timer
+void TIMER0_IRQHandler(void){
+	uart_data_count++;
+	if(uart_data_count == 10){
+		SEND_DATA();
+		uart_data_count = 0;
+	}
+	LPC_TIM0->IR |= 1<<0;
+}
+
 //333ms Timer interrupt
 void TIMER1_IRQHandler(void){
 	if(rgb_flag==4){
@@ -391,6 +540,7 @@ void TIMER1_IRQHandler(void){
 			blink_red_flag = 0;
 		}
 	}
+
 	LPC_TIM1->IR |= 1<<0;
 }
 
@@ -408,21 +558,45 @@ void EINT0_IRQHandler(void){
 	toggle_count++;
 	TOGGLE_MODE();
 
-	if(mode != 0x01){
+	//start 1sec timer for checking two sw3 button presses
+	if(mode == 0x02){
 		LPC_TIM3->TCR = 0x01;
 	}
 	LPC_SC->EXTINT |= 1<<0;
 }
 
 void EINT3_IRQHandler(void){
+	//temperature interrupt handler
 	if ((LPC_GPIOINT->IO0IntStatF)>>2 & 0x01){
 		TEMP_SENSOR();
 		LPC_GPIOINT->IO0IntClr = 1<<2;
+	}
+	else if(((LPC_GPIOINT->IO2IntStatF)>>5 & 0x01)){
+		if(obst_warning_flag == 0){
+			light_setHiThreshold(500);
+			light_setLoThreshold(0);
+			SEND_OBST_WARNING();
+			obst_warning_flag = 1;
+			mode_change_flag = 1;
+
+		} else if(obst_warning_flag == 1){
+			light_setHiThreshold(3000);
+			light_setLoThreshold(500);
+			SEND_OBST_WARNING();
+			obst_warning_flag = 0;
+			mode_change_flag = 1;
+		}
+		light_clearIrqStatus();
+		LPC_GPIOINT->IO2IntClr = 1<<5;
 	}
 }
 
 void STATIONARY(){
 	sprintf(tempStrPtr, "Temp: %2.2f", temp_value/10.0);
+	if(obst_warning_flag == 1){ //clear obst warning
+		obst_warning_flag = 0;
+		pca9532_setLeds(0x0000, 0xffff);
+	}
 	modeStrPtr = "STATIONARY";
 	oled_putString(20, 20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	oled_putString(20, 28, (unsigned char*)tempStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
@@ -435,9 +609,16 @@ void COUNTDOWN(){
 		toggle_count = 0;
 		oled_clearScreen(OLED_COLOR_BLACK);
 
-		//reset timer 3 for launch mode
-		//LPC_TIM3->TCR = 0x02;
-		//LPC_TIM3->TCR = 0x01;
+		modeChangeMsg = "Entering LAUNCH Mode \r\n";
+		UART_Send(LPC_UART3, (uint8_t *)modeChangeMsg , strlen(modeChangeMsg), BLOCKING);
+
+		//Reset UART data timer
+		uart_data_count = 0;
+		LPC_TIM0->TCR = 0x02;
+		LPC_TIM0->TCR = 0x01;
+
+		temp_count = 0;
+
 	} else if(countdown_flag == 1){
 		stationary_counter = stationary_counter - 1;
 		led7seg_setChar(sseg_chars[stationary_counter], TRUE);
@@ -462,9 +643,23 @@ void LAUNCH(){
 }
 
 void RETURN(){
-	modeStrPtr = "RETURN";
-	oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	//brightness = 0;
+	LED_ARRAY();
+	//sprintf(lightStrPtr, "Lux: %d", brightness);
+	/*
+	if(obst_warning_flag == 0){
+		modeStrPtr = "RETURN";
+		oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	}*/
+	//oled_putString(20, 28, (unsigned char*)lightStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
 	//led7seg_setChar(0xAA, TRUE); //set 0 on sseg
+	if(obst_warning_flag == 0){
+		modeStrPtr = "RETURN";
+		oled_putString(20,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	} else if(obst_warning_flag == 1){
+		modeStrPtr = "Obstacle near";
+		oled_putString(5,20, (unsigned char*)modeStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+	}
 }
 
 void CHANGE_VIEWMODE(){
@@ -513,12 +708,18 @@ void SET_WARNING(){
 			if(temp_warning_message_flag == 0){
 				//print oled temp warning message under acc warning message
 				oled_putString(0,28, (unsigned char*)stateStrPtr, OLED_COLOR_WHITE,OLED_COLOR_BLACK);
+				//Send UART warning
+				SEND_WARNING();
+
 				temp_warning_message_flag = 1;
-			}
+						}
 		} else {
 			if(temp_warning_message_flag == 0){
 				oled_clearScreen(OLED_COLOR_BLACK);
 				oled_putString(0, 20, (unsigned char*)stateStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+				//Send UART warning
+				SEND_WARNING();
+
 				temp_warning_message_flag = 1;
 			}
 		}
@@ -539,17 +740,25 @@ void SET_WARNING(){
 			if(acc_warning_message_flag == 0){
 				//display acc warning message under already displayed temp warning message
 				oled_putString(0,28, (unsigned char*)stateStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+				//Send UART warning
+				SEND_WARNING();
+
 				acc_warning_message_flag = 1;
 			}
 		} else {
 			if(acc_warning_message_flag == 0){
 				oled_clearScreen(OLED_COLOR_BLACK);
 				oled_putString(0, 20, (unsigned char*)stateStrPtr, OLED_COLOR_WHITE, OLED_COLOR_BLACK);
+				//Send UART warning
+				SEND_WARNING();
+
 				acc_warning_message_flag = 1;
 			}
 		}
-		check_clearWarning();
 	}
+
+	//Check for sw4 button press
+	check_clearWarning();
 }
 
 int main (void) {
@@ -560,6 +769,7 @@ int main (void) {
     init_i2c();
     init_ssp();
     init_uart();
+    init_Timer0();
 	init_Timer1();
 	init_Timer2();	//init timer 2
 	init_Timer3();
@@ -570,9 +780,13 @@ int main (void) {
     oled_init();
     led7seg_init();
 
+    //Turns off light sensor until RETURN mode
+    close_light();
+
     //Clears all interrupts
     NVIC_ClearPendingIRQ(EINT0_IRQn);
 	NVIC_ClearPendingIRQ(EINT3_IRQn);
+	NVIC_ClearPendingIRQ(TIMER0_IRQn);
 	NVIC_ClearPendingIRQ(TIMER1_IRQn);
 	NVIC_ClearPendingIRQ(TIMER3_IRQn);
 
@@ -588,11 +802,13 @@ int main (void) {
 	NVIC_SetPriority(SysTick_IRQn,0x00);
 	NVIC_SetPriority(EINT0_IRQn,0x40);
 	NVIC_SetPriority(EINT3_IRQn,0x48);
-	NVIC_SetPriority(TIMER1_IRQn,0x50);
+	NVIC_SetPriority(TIMER0_IRQn,0x50);
+	NVIC_SetPriority(TIMER1_IRQn,0x58);
 	NVIC_SetPriority(TIMER3_IRQn,0x60);
 
 	NVIC_EnableIRQ(EINT0_IRQn);
 	NVIC_EnableIRQ(EINT3_IRQn);
+	NVIC_EnableIRQ(TIMER0_IRQn);
 	NVIC_EnableIRQ(TIMER1_IRQn);
 	NVIC_EnableIRQ(TIMER3_IRQn);
 
@@ -614,22 +830,19 @@ int main (void) {
 	acc_warning_message_flag = 0;
 	temp_warning_flag = 0;
 	temp_warning_message_flag = 0;
+	obst_warning_flag = 0;
 
-
-	//uart testing
-	/*
-	//(uncomment this block and comment out SET_MODE and SET_WARNING in the loop to test uart connection)
-	uint8_t data = 0;
-	uint32_t len = 0;
-	uint8_t line[64];
+	GPIO_ClearValue(2,1<<0);
+	GPIO_ClearValue(0,1<<26);
 
 	//test sending message
 	msg = "Welcome to EE2024 \r\n";
 	UART_Send(LPC_UART3, (uint8_t *)msg , strlen(msg), BLOCKING);
-	//test receiving a letter and sending back to port
-	UART_Receive(LPC_UART3, &data, 1, BLOCKING);
-	UART_Send(LPC_UART3, &data, 1, BLOCKING);
-	*/
+	temp_count = 0;
+
+	modeChangeMsg = "Entering STATIONARY Mode \r\n";
+	UART_Send(LPC_UART3, (uint8_t *)modeChangeMsg, strlen(modeChangeMsg), BLOCKING);
+	temp_count = 0;
 
     while (1)
     {
